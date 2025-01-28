@@ -5679,13 +5679,16 @@ static void cmd_frame_step(void *p)
 {
     struct mp_cmd_ctx *cmd = p;
     struct MPContext *mpctx = cmd->mpctx;
+    bool backstep = *(bool *)cmd->priv;
+    int frames = backstep ? -1 : cmd->args[0].v.i;
+    int flags = backstep ? 1 : cmd->args[1].v.i;
 
-    if (!mpctx->playback_initialized) {
+    if (!mpctx->playback_initialized || frames == 0) {
         cmd->success = false;
         return;
     }
 
-    if (cmd->cmd->is_up_down) {
+    if (frames > 0 && !flags && cmd->cmd->is_up_down) {
         if (cmd->cmd->is_up) {
             if (mpctx->step_frames < 1)
                 set_pause_state(mpctx, true);
@@ -5693,25 +5696,12 @@ static void cmd_frame_step(void *p)
             if (cmd->cmd->repeated) {
                 set_pause_state(mpctx, false);
             } else {
-                add_step_frame(mpctx, 1);
+                add_step_frame(mpctx, frames, flags);
             }
         }
     } else {
-        add_step_frame(mpctx, 1);
+        add_step_frame(mpctx, frames, flags);
     }
-}
-
-static void cmd_frame_back_step(void *p)
-{
-    struct mp_cmd_ctx *cmd = p;
-    struct MPContext *mpctx = cmd->mpctx;
-
-    if (!mpctx->playback_initialized) {
-        cmd->success = false;
-        return;
-    }
-
-    add_step_frame(mpctx, -1);
 }
 
 static void cmd_quit(void *p)
@@ -6990,9 +6980,22 @@ const struct mp_cmd_def mp_cmds[] = {
     { "stop", cmd_stop,
         { {"flags", OPT_FLAGS(v.i, {"keep-playlist", 1}), .flags = MP_CMD_OPT_ARG} }
     },
-    { "frame-step", cmd_frame_step, .allow_auto_repeat = true,
-        .on_updown = true },
-    { "frame-back-step", cmd_frame_back_step, .allow_auto_repeat = true },
+    { "frame-step", cmd_frame_step,
+        {
+            {"frames", OPT_INT(v.i), OPTDEF_INT(1)},
+            {"flags", OPT_CHOICE(v.i,
+                    {"play", 0},
+                    {"seek", 1}),
+                    .flags = MP_CMD_OPT_ARG},
+        },
+        .allow_auto_repeat = true,
+        .on_updown = true,
+        .priv = &(const bool){false},
+    },
+    { "frame-back-step", cmd_frame_step,
+        .priv = &(const int){true},
+        .allow_auto_repeat = true,
+    },
     { "playlist-next", cmd_playlist_next_prev,
         {
             {"flags", OPT_CHOICE(v.i,
@@ -7725,6 +7728,38 @@ void mp_option_change_callback(void *ctx, struct m_config_option *co, int flags,
         }
     }
 
+    if (flags & UPDATE_HWDEC) {
+        struct track *track = mpctx->current_track[0][STREAM_VIDEO];
+        struct mp_decoder_wrapper *dec = track ? track->dec : NULL;
+        if (dec) {
+            mp_decoder_wrapper_control(dec, VDCTRL_REINIT, NULL);
+            double last_pts = mpctx->video_pts;
+            if (last_pts != MP_NOPTS_VALUE)
+                queue_seek(mpctx, MPSEEK_ABSOLUTE, last_pts, MPSEEK_EXACT, 0);
+        }
+    }
+
+    if (flags & UPDATE_DVB_PROG) {
+        if (!mpctx->stop_play)
+            mpctx->stop_play = PT_CURRENT_ENTRY;
+    }
+
+    if (flags & UPDATE_DEMUXER)
+        mpctx->demuxer_changed = true;
+
+    if (flags & UPDATE_AD) {
+        uninit_audio_chain(mpctx);
+        reinit_audio_chain(mpctx);
+    }
+
+    if (flags & UPDATE_VD) {
+        struct track *track = mpctx->current_track[0][STREAM_VIDEO];
+        uninit_video_chain(mpctx);
+        reinit_video_chain(mpctx);
+        if (track)
+            queue_seek(mpctx, MPSEEK_RELATIVE, 0.0, MPSEEK_EXACT, 0);
+    }
+
     if (opt_ptr == &opts->vo->android_surface_size) {
         if (mpctx->video_out)
             vo_control(mpctx->video_out, VOCTRL_EXTERNAL_RESIZE, NULL);
@@ -7772,17 +7807,6 @@ void mp_option_change_callback(void *ctx, struct m_config_option *co, int flags,
         mp_wakeup_core(mpctx);
     }
 
-    if (flags & UPDATE_HWDEC) {
-        struct track *track = mpctx->current_track[0][STREAM_VIDEO];
-        struct mp_decoder_wrapper *dec = track ? track->dec : NULL;
-        if (dec) {
-            mp_decoder_wrapper_control(dec, VDCTRL_REINIT, NULL);
-            double last_pts = mpctx->video_pts;
-            if (last_pts != MP_NOPTS_VALUE)
-                queue_seek(mpctx, MPSEEK_ABSOLUTE, last_pts, MPSEEK_EXACT, 0);
-        }
-    }
-
     if (opt_ptr == &opts->vo->window_scale)
         update_window_scale(mpctx);
 
@@ -7791,11 +7815,6 @@ void mp_option_change_callback(void *ctx, struct m_config_option *co, int flags,
 
     if (opt_ptr == &opts->cursor_autohide_delay)
         mpctx->mouse_timer = 0;
-
-    if (flags & UPDATE_DVB_PROG) {
-        if (!mpctx->stop_play)
-            mpctx->stop_play = PT_CURRENT_ENTRY;
-    }
 
     if (opt_ptr == &opts->loop_file) {
         mpctx->remaining_file_loops = opts->loop_file;

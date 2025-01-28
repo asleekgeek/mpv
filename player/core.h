@@ -69,7 +69,7 @@ enum seek_type {
     MPSEEK_RELATIVE,
     MPSEEK_ABSOLUTE,
     MPSEEK_FACTOR,
-    MPSEEK_BACKSTEP,
+    MPSEEK_FRAMESTEP,
     MPSEEK_CHAPTER,
 };
 
@@ -463,6 +463,7 @@ typedef struct MPContext {
     char *open_format;
     int open_url_flags;
     bool open_for_prefetch;
+    bool demuxer_changed;
     // --- All fields below are owned by open_thread, unless open_done was set
     //     to true.
     struct demuxer *open_res_demuxer;
@@ -600,7 +601,7 @@ void reset_playback_state(struct MPContext *mpctx);
 void set_pause_state(struct MPContext *mpctx, bool user_pause);
 void update_internal_pause_state(struct MPContext *mpctx);
 void update_core_idle_state(struct MPContext *mpctx);
-void add_step_frame(struct MPContext *mpctx, int dir);
+void add_step_frame(struct MPContext *mpctx, int dir, bool use_seek);
 void queue_seek(struct MPContext *mpctx, enum seek_type type, double amount,
                 enum seek_precision exact, int flags);
 double get_time_length(struct MPContext *mpctx);
